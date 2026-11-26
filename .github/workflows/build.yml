@@ -1,0 +1,38 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish single-file exe
+        run: dotnet publish App/AirSend.csproj -c Release -o publish
+      - name: Smoke test (starts and lists devices)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath publish/AirSend.exe -ArgumentList '--list' -PassThru -Wait -NoNewWindow
+          Get-Content "$env:LOCALAPPDATA\AirSend\airsend.log"
+          if ($p.ExitCode -ne 0) { throw "AirSend --list exited with $($p.ExitCode)" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AirSend
+          path: publish/AirSend.exe
+      - name: Create release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v0.1.${{ github.run_number }}"
+          gh release create "$tag" publish/AirSend.exe --title "AirSend $tag" \
+            --notes "Download **AirSend.exe** below and double-click it. Setup steps are in the README." 
