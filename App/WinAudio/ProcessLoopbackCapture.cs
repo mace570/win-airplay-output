@@ -15,8 +15,75 @@ public sealed class ProcessLoopbackCapture : IAudioCapture
     Thread? _thread;
     volatile bool _stop;
 
-    public ProcessLoopbackCapture(string exeName) { _exeName = exeName; }
+    readonly bool _muteLocally;
+    public ProcessLoopbackCapture(string exeName, bool muteLocally = false) { _exeName = exeName; _muteLocally = muteLocally; }
     public string Description => $"Only the app '{_exeName}'";
+    public string? Note { get; private set; }
+
+    // ---- "mute on this PC" with self-check ----
+    enum MuteState { WaitForSound, CheckingApp, MutedApp, WaitForSoundDevice, CheckingDevice, MutedDevice, Failed }
+    MuteState _ms = MuteState.WaitForSound;
+    LocalMute? _appMute;
+    readonly List<DeviceMute> _devMutes = new();
+    double _soundSince = -1, _checkStart, _lastSoundAt = -1, _nextReapply;
+    const float SoundThreshold = 0.003f;
+
+    void MuteTick(float windowPeak)
+    {
+        if (!_muteLocally || _ms == MuteState.Failed) return;
+        double now = NtpClock.Now;
+        bool sound = windowPeak > SoundThreshold;
+        if (sound) { _lastSoundAt = now; if (_soundSince < 0) _soundSince = now; } else _soundSince = -1;
+        switch (_ms)
+        {
+            case MuteState.WaitForSound:
+                if (_soundSince >= 0 && now - _soundSince >= 1.0)
+                {
+                    _appMute ??= new LocalMute(_exeName);
+                    int n = _appMute.Apply();
+                    Log.Info($"Local mute: muted {n} session(s) of '{_exeName}', checking the stream still gets sound…");
+                    _ms = MuteState.CheckingApp; _checkStart = now; _lastSoundAt = -1;
+                }
+                break;
+            case MuteState.CheckingApp:
+                if (_lastSoundAt > _checkStart + 0.7) { _ms = MuteState.MutedApp; Note = "muted on this PC"; Log.Info("Local mute: app muted on this PC and the stream still has sound"); }
+                else if (now - _checkStart > 3.0)
+                {
+                    Log.Info("Local mute: muting the app also silenced the stream; unmuting it and trying the output device instead");
+                    _appMute!.Restore();
+                    _ms = MuteState.WaitForSoundDevice; _soundSince = -1;
+                }
+                break;
+            case MuteState.MutedApp:
+                if (now >= _nextReapply) { _nextReapply = now + 2; _appMute!.Apply(); } // catch new sessions (e.g. new tab/track)
+                break;
+            case MuteState.WaitForSoundDevice:
+                if (_soundSince >= 0 && now - _soundSince >= 1.0)
+                {
+                    var ids = _appMute!.DevicesInUse();
+                    if (ids.Count == 0) ids.Add(null!);
+                    foreach (var id in ids) { var d = new DeviceMute(id); try { d.Apply(); _devMutes.Add(d); } catch (Exception ex) { Log.Debug($"device mute: {ex.Message}"); } }
+                    _ms = MuteState.CheckingDevice; _checkStart = now; _lastSoundAt = -1;
+                }
+                break;
+            case MuteState.CheckingDevice:
+                if (_lastSoundAt > _checkStart + 0.7) { _ms = MuteState.MutedDevice; Note = "PC output muted"; Log.Info("Local mute: output device muted and the stream still has sound"); }
+                else if (now - _checkStart > 3.0)
+                {
+                    Log.Warn("Local mute: muting the output device also silenced the stream; giving up on local mute");
+                    RestoreMute();
+                    _ms = MuteState.Failed; Note = "couldn't mute on this PC without silencing the stream";
+                }
+                break;
+        }
+    }
+
+    void RestoreMute()
+    {
+        try { _appMute?.Restore(); } catch (Exception ex) { Log.Debug($"restore: {ex.Message}"); }
+        foreach (var d in _devMutes) { try { d.Dispose(); } catch (Exception ex) { Log.Debug($"restore: {ex.Message}"); } }
+        _devMutes.Clear();
+    }
     public bool IsAlive => !_stop;
 
     public static bool IsSupported => Environment.OSVersion.Version.Build >= 20348;
@@ -80,6 +147,8 @@ public sealed class ProcessLoopbackCapture : IAudioCapture
 
             var stereo = new float[Rate * 2];
             double nextCheck = NtpClock.Now + 2;
+            double nextMuteTick = NtpClock.Now + 0.5;
+            float windowPeak = 0;
             while (!_stop)
             {
                 WaitForSingleObject(evt, 50);
@@ -94,6 +163,13 @@ public sealed class ProcessLoopbackCapture : IAudioCapture
                     else PcmConvert.ToStereo(data, n, 2, SampleKind.Int16, stereo);
                     cc.ReleaseBuffer(frames);
                     fifo.Write(stereo.AsSpan(0, n * 2), Rate);
+                    if (_muteLocally) for (int i = 0; i < n * 2; i++) { float a = Math.Abs(stereo[i]); if (a > windowPeak) windowPeak = a; }
+                }
+                if (NtpClock.Now >= nextMuteTick)
+                {
+                    nextMuteTick = NtpClock.Now + 0.5;
+                    try { MuteTick(windowPeak); } catch (Exception ex) { Log.Debug($"mute tick: {ex.Message}"); }
+                    windowPeak = 0;
                 }
                 if (NtpClock.Now >= nextCheck)
                 {
@@ -105,6 +181,7 @@ public sealed class ProcessLoopbackCapture : IAudioCapture
         }
         finally
         {
+            if (_muteLocally) { RestoreMute(); if (_ms != MuteState.Failed) { _ms = MuteState.WaitForSound; Note = null; } }
             if (ccObj != null) Marshal.ReleaseComObject(ccObj);
             Marshal.ReleaseComObject(client);
             if (fmtPtr != IntPtr.Zero) Marshal.FreeHGlobal(fmtPtr);
@@ -141,7 +218,12 @@ public sealed class ProcessLoopbackCapture : IAudioCapture
         }
     }
 
-    public void Dispose() { _stop = true; _thread?.Join(2000); }
+    public void Dispose()
+    {
+        _stop = true;
+        _thread?.Join(3000);
+        if (_muteLocally) RestoreMute(); // idempotent safety net
+    }
 
     // ---------------- interop ----------------
     [StructLayout(LayoutKind.Sequential)]

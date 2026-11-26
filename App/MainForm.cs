@@ -14,6 +14,8 @@ sealed class MainForm : Form
     readonly ComboBox _devices = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     readonly ComboBox _apps = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     readonly Button _refreshApps = new() { Text = "Refresh", AutoSize = true };
+    readonly CheckBox _muteLocal = new() { Text = "Mute this app on my PC while streaming (headphones/speakers stay quiet)", AutoSize = true };
+    string _lastStatus = "Ready.";
     readonly TrackBar _volume = new() { Minimum = 0, Maximum = 100, TickFrequency = 10, Dock = DockStyle.Fill, AutoSize = false, Height = 32 };
     readonly Label _volLabel = new() { AutoSize = true, Anchor = AnchorStyles.Left };
     readonly Button _startStop = new() { Text = "Start streaming", Height = 40, Dock = DockStyle.Fill, Font = new Font(SystemFonts.MessageBoxFont!.FontFamily, 11f, FontStyle.Bold) };
@@ -41,13 +43,19 @@ sealed class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
         Font = SystemFonts.MessageBoxFont!;
-        ClientSize = new Size(560, 430);
+        ClientSize = new Size(580, 460);
         Padding = new Padding(12);
         BuildLayout();
         BuildTray();
         WireEvents();
         LoadSettingsIntoUi();
-        _uiTimer.Tick += (_, _) => { _meter.Value = _engine == null ? 0 : (int)Math.Clamp(Math.Sqrt(_engine.Level) * 100, 0, 100); };
+        _uiTimer.Tick += (_, _) =>
+        {
+            _meter.Value = _engine == null ? 0 : (int)Math.Clamp(Math.Sqrt(_engine.Level) * 100, 0, 100);
+            var note = _engine?.State == EngineState.Streaming ? _engine.CaptureNote : null;
+            var shown = note == null ? _lastStatus : $"{_lastStatus} ({note})";
+            if (_status.Text != shown) _status.Text = shown;
+        };
         _uiTimer.Start();
     }
 
@@ -68,16 +76,18 @@ sealed class MainForm : Form
         t.Controls.Add(_modeDevice, 0, 2); t.Controls.Add(_devices, 1, 2);
         t.SetColumnSpan(_devices, 2);
         t.Controls.Add(_modeApp, 0, 3); t.Controls.Add(_apps, 1, 3); t.Controls.Add(_refreshApps, 2, 3);
-        if (!ProcessLoopbackCapture.IsSupported) { _modeApp.Enabled = false; _apps.Enabled = false; _refreshApps.Enabled = false; _modeApp.Text = "Only this app (needs newer Windows):"; }
+        if (!ProcessLoopbackCapture.IsSupported) { _muteLocal.Enabled = false; _modeApp.Enabled = false; _apps.Enabled = false; _refreshApps.Enabled = false; _modeApp.Text = "Only this app (needs newer Windows):"; }
 
-        t.Controls.Add(L("Speaker volume:"), 0, 4); t.Controls.Add(_volume, 1, 4); t.Controls.Add(_volLabel, 2, 4);
-        t.Controls.Add(_startStop, 0, 5); t.SetColumnSpan(_startStop, 3);
-        t.Controls.Add(_meter, 0, 6); t.SetColumnSpan(_meter, 3);
-        t.Controls.Add(_status, 0, 7); t.SetColumnSpan(_status, 3);
-        t.Controls.Add(_autoStream, 0, 8); t.SetColumnSpan(_autoStream, 3);
-        t.Controls.Add(_autoWin, 0, 9); t.SetColumnSpan(_autoWin, 3);
-        t.Controls.Add(_closeToTray, 0, 10); t.SetColumnSpan(_closeToTray, 3);
-        t.Controls.Add(_openLog, 0, 11); t.SetColumnSpan(_openLog, 3);
+        _muteLocal.Margin = new Padding(24, 0, 3, 6);
+        t.Controls.Add(_muteLocal, 0, 4); t.SetColumnSpan(_muteLocal, 3);
+        t.Controls.Add(L("Speaker volume:"), 0, 5); t.Controls.Add(_volume, 1, 5); t.Controls.Add(_volLabel, 2, 5);
+        t.Controls.Add(_startStop, 0, 6); t.SetColumnSpan(_startStop, 3);
+        t.Controls.Add(_meter, 0, 7); t.SetColumnSpan(_meter, 3);
+        t.Controls.Add(_status, 0, 8); t.SetColumnSpan(_status, 3);
+        t.Controls.Add(_autoStream, 0, 9); t.SetColumnSpan(_autoStream, 3);
+        t.Controls.Add(_autoWin, 0, 10); t.SetColumnSpan(_autoWin, 3);
+        t.Controls.Add(_closeToTray, 0, 11); t.SetColumnSpan(_closeToTray, 3);
+        t.Controls.Add(_openLog, 0, 12); t.SetColumnSpan(_openLog, 3);
         Controls.Add(t);
     }
 
@@ -115,6 +125,7 @@ sealed class MainForm : Form
         _devices.SelectedIndexChanged += (_, _) => SourceChanged();
         _apps.SelectedIndexChanged += (_, _) => SourceChanged();
         _apps.DropDown += (_, _) => RefreshApps(keepOpen: true);
+        _muteLocal.CheckedChanged += (_, _) => { if (!_loading) { _s.MuteAppLocally = _muteLocal.Checked; _s.Save(); RestartIfRunning(); } };
         _autoStream.CheckedChanged += (_, _) => { if (!_loading) { _s.AutoStartStreaming = _autoStream.Checked; _s.Save(); } };
         _closeToTray.CheckedChanged += (_, _) => { if (!_loading) { _s.CloseToTray = _closeToTray.Checked; _s.Save(); } };
         _autoWin.CheckedChanged += (_, _) =>
@@ -150,6 +161,7 @@ sealed class MainForm : Form
             _volume.Value = Math.Clamp(_s.Volume, 0, 100);
             _volLabel.Text = $"{_volume.Value}%";
             _autoStream.Checked = _s.AutoStartStreaming;
+            _muteLocal.Checked = _s.MuteAppLocally;
             _closeToTray.Checked = _s.CloseToTray;
             try { _autoWin.Checked = Autostart.IsEnabled; } catch { }
         }
@@ -192,6 +204,7 @@ sealed class MainForm : Form
         _devices.Enabled = _modeDevice.Checked;
         _apps.Enabled = _modeApp.Checked;
         _refreshApps.Enabled = _modeApp.Checked;
+        _muteLocal.Enabled = _modeApp.Checked;
     }
 
     protected override async void OnShown(EventArgs e)
@@ -278,7 +291,8 @@ sealed class MainForm : Form
         {
             var exe = (_apps.SelectedItem as AudioAppInfo)?.ExeName ?? _s.AppExe;
             if (string.IsNullOrEmpty(exe)) { SetStatus("Pick an app first (start playing something in it, then press Refresh)."); return; }
-            factory = () => new ProcessLoopbackCapture(exe);
+            bool mute = _muteLocal.Checked;
+            factory = () => new ProcessLoopbackCapture(exe, mute);
         }
         else
         {
@@ -329,6 +343,7 @@ sealed class MainForm : Form
 
     void SetStatus(string text)
     {
+        _lastStatus = text;
         _status.Text = text;
         var tip = "AirSend – " + text;
         _tray.Text = tip.Length > 63 ? tip[..63] : tip;

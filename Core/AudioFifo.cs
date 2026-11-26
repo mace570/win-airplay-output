@@ -74,6 +74,8 @@ public interface IAudioCapture : IDisposable
     void Start(AudioFifo fifo);
     /// <summary>True while the capture is healthy; false once it has failed and must be restarted.</summary>
     bool IsAlive { get; }
+    /// <summary>Optional short note for the UI (e.g. "muted on this PC").</summary>
+    string? Note => null;
 }
 
 /// <summary>Test source: a sine tone generated in real time.</summary>

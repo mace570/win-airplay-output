@@ -46,6 +46,7 @@ public sealed class StreamEngine : IDisposable
     }
 
     public SpeakerInfo Speaker => _speaker;
+    public string? CaptureNote => _capture?.Note;
 
     void SetStatus(EngineState s, string text)
     {

@@ -15,7 +15,6 @@ static class Program
         Log.Init(Path.Combine(AppSettings.Dir, "airsend.log"));
         Log.Info($"AirSend {Application.ProductVersion} starting on Windows {Environment.OSVersion.Version} ({(Environment.Is64BitOperatingSystem ? "x64" : "x86")})");
         timeBeginPeriod(1);
-        LocalMute.RecoverAfterCrash();
 
         if (args.Length > 0 && args[0].StartsWith("--") && args[0] != "--minimized")
         {
@@ -31,6 +30,8 @@ static class Program
             MessageBox.Show("AirSend is already running. Look for its icon in the taskbar notification area (bottom-right, maybe under the ^ arrow).", "AirSend", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return 0;
         }
+        LocalMute.RecoverAfterCrash();
+        DeviceMute.RecoverAfterCrash();
         Application.ThreadException += (_, e) => Log.Error("UI error", e.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, e) => Log.Error("Fatal error", e.ExceptionObject as Exception);
         ApplicationConfiguration.Initialize();
@@ -106,7 +107,7 @@ static class Program
                 if (spk == null) { Log.Error($"Speaker '{target}' not found"); return 2; }
                 var app = Arg("--app");
                 Func<IAudioCapture> factory = args.Contains("--tone") ? () => new ToneCapture(440, 48000)
-                    : string.IsNullOrEmpty(app) ? () => new DeviceLoopbackCapture(null) : () => new ProcessLoopbackCapture(app);
+                    : string.IsNullOrEmpty(app) ? () => new DeviceLoopbackCapture(null) : () => new ProcessLoopbackCapture(app, args.Contains("--mute"));
                 using var eng = new StreamEngine(factory, spk, new EngineOptions { VolumePercent = int.Parse(Arg("--volume", "25")) });
                 eng.Start();
                 int secs = int.Parse(Arg("--seconds", "20"));
