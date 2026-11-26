@@ -31,10 +31,12 @@ Right-click the icon to start/stop or exit. Tick *Open AirSend when Windows star
 
 ### Good to know
 
-* **Mute this app on my PC while streaming** (in *Only this app* mode, on by default): the app goes quiet on your
-  headphones/speakers but keeps playing on the Sonos. AirSend first mutes just the app in the Windows volume mixer and checks
-  the Sonos still gets sound; if Windows silences the stream that way, it mutes the output device instead. Everything is
-  unmuted when you stop streaming, exit AirSend, or the app closes (and on the next start if AirSend ever crashed).
+* **Keep it off my PC, play it here** (in *Only this app* mode): while streaming, Windows plays the app's sound through
+  the output you pick here instead of your headphones, so you only hear it on the Sonos, and the rest of the PC stays on
+  your headphones. Pick an output you don't listen to (e.g. *Speakers* with nothing plugged in, or a monitor without speakers).
+  If your PC has no second output, install the free [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) and pick *CABLE Input*.
+  The app is put back on its normal output when you stop streaming (or the next time it runs, if it was closed).
+  (Simply muting the app in Windows doesn't work: Windows then also silences what AirSend captures.)
 * In *All PC sound* mode you'll hear the music on the PC too, about 2 seconds earlier than on the Sonos.
 * **One speaker at a time.** Starting AirSend takes over the speaker; if someone starts playing from the Sonos app,
   the Sonos stops AirSend's stream and AirSend shows a note instead of grabbing the speaker back.

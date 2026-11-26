@@ -32,6 +32,7 @@ static class Program
         }
         LocalMute.RecoverAfterCrash();
         DeviceMute.RecoverAfterCrash();
+        AppRouteSession.RecoverPending();
         Application.ThreadException += (_, e) => Log.Error("UI error", e.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, e) => Log.Error("Fatal error", e.ExceptionObject as Exception);
         ApplicationConfiguration.Initialize();
@@ -107,7 +108,7 @@ static class Program
                 if (spk == null) { Log.Error($"Speaker '{target}' not found"); return 2; }
                 var app = Arg("--app");
                 Func<IAudioCapture> factory = args.Contains("--tone") ? () => new ToneCapture(440, 48000)
-                    : string.IsNullOrEmpty(app) ? () => new DeviceLoopbackCapture(null) : () => new ProcessLoopbackCapture(app, args.Contains("--mute"));
+                    : string.IsNullOrEmpty(app) ? () => new DeviceLoopbackCapture(null) : () => new ProcessLoopbackCapture(app, Arg("--quiet-device") is { Length: > 0 } q ? q : null);
                 using var eng = new StreamEngine(factory, spk, new EngineOptions { VolumePercent = int.Parse(Arg("--volume", "25")) });
                 eng.Start();
                 int secs = int.Parse(Arg("--seconds", "20"));

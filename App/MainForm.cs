@@ -14,7 +14,9 @@ sealed class MainForm : Form
     readonly ComboBox _devices = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     readonly ComboBox _apps = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     readonly Button _refreshApps = new() { Text = "Refresh", AutoSize = true };
-    readonly CheckBox _muteLocal = new() { Text = "Mute this app on my PC while streaming (headphones/speakers stay quiet)", AutoSize = true };
+    readonly CheckBox _muteLocal = new() { Text = "Keep it off my PC, play it here:", AutoSize = true };
+    readonly ComboBox _quietDevices = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+    readonly ToolTip _tip = new();
     string _lastStatus = "Ready.";
     readonly TrackBar _volume = new() { Minimum = 0, Maximum = 100, TickFrequency = 10, Dock = DockStyle.Fill, AutoSize = false, Height = 32 };
     readonly Label _volLabel = new() { AutoSize = true, Anchor = AnchorStyles.Left };
@@ -49,8 +51,10 @@ sealed class MainForm : Form
         BuildTray();
         WireEvents();
         LoadSettingsIntoUi();
+        int ticks = 0;
         _uiTimer.Tick += (_, _) =>
         {
+            if (++ticks % 50 == 0 && _engine == null && AppRouteSession.HasPending) AppRouteSession.RecoverPending();
             _meter.Value = _engine == null ? 0 : (int)Math.Clamp(Math.Sqrt(_engine.Level) * 100, 0, 100);
             var note = _engine?.State == EngineState.Streaming ? _engine.CaptureNote : null;
             var shown = note == null ? _lastStatus : $"{_lastStatus} ({note})";
@@ -76,10 +80,13 @@ sealed class MainForm : Form
         t.Controls.Add(_modeDevice, 0, 2); t.Controls.Add(_devices, 1, 2);
         t.SetColumnSpan(_devices, 2);
         t.Controls.Add(_modeApp, 0, 3); t.Controls.Add(_apps, 1, 3); t.Controls.Add(_refreshApps, 2, 3);
-        if (!ProcessLoopbackCapture.IsSupported) { _muteLocal.Enabled = false; _modeApp.Enabled = false; _apps.Enabled = false; _refreshApps.Enabled = false; _modeApp.Text = "Only this app (needs newer Windows):"; }
+        if (!ProcessLoopbackCapture.IsSupported || !AppAudioRouting.IsSupported) { _muteLocal.Enabled = false; _quietDevices.Enabled = false; }
+        if (!ProcessLoopbackCapture.IsSupported) { _modeApp.Enabled = false; _apps.Enabled = false; _refreshApps.Enabled = false; _modeApp.Text = "Only this app (needs newer Windows):"; }
 
-        _muteLocal.Margin = new Padding(24, 0, 3, 6);
-        t.Controls.Add(_muteLocal, 0, 4); t.SetColumnSpan(_muteLocal, 3);
+        _muteLocal.Margin = new Padding(20, 4, 3, 6);
+        t.Controls.Add(_muteLocal, 0, 4); t.Controls.Add(_quietDevices, 1, 4); t.SetColumnSpan(_quietDevices, 2);
+        _tip.SetToolTip(_muteLocal, "While streaming, Windows sends this app's sound to the output picked here instead of your headphones.\nPick an output you don't listen to (e.g. unused speakers or a monitor without speakers).\nThe Sonos still gets the sound. It is put back when you stop streaming.");
+        _tip.SetToolTip(_quietDevices, _tip.GetToolTip(_muteLocal));
         t.Controls.Add(L("Speaker volume:"), 0, 5); t.Controls.Add(_volume, 1, 5); t.Controls.Add(_volLabel, 2, 5);
         t.Controls.Add(_startStop, 0, 6); t.SetColumnSpan(_startStop, 3);
         t.Controls.Add(_meter, 0, 7); t.SetColumnSpan(_meter, 3);
@@ -125,7 +132,8 @@ sealed class MainForm : Form
         _devices.SelectedIndexChanged += (_, _) => SourceChanged();
         _apps.SelectedIndexChanged += (_, _) => SourceChanged();
         _apps.DropDown += (_, _) => RefreshApps(keepOpen: true);
-        _muteLocal.CheckedChanged += (_, _) => { if (!_loading) { _s.MuteAppLocally = _muteLocal.Checked; _s.Save(); RestartIfRunning(); } };
+        _muteLocal.CheckedChanged += (_, _) => { UpdateEnabled(); if (!_loading) { _s.QuietAppLocally = _muteLocal.Checked; _s.Save(); RestartIfRunning(); } };
+        _quietDevices.SelectedIndexChanged += (_, _) => { if (!_loading) { _s.QuietDeviceId = (_quietDevices.SelectedItem as DeviceItem)?.Id; _s.Save(); RestartIfRunning(); } };
         _autoStream.CheckedChanged += (_, _) => { if (!_loading) { _s.AutoStartStreaming = _autoStream.Checked; _s.Save(); } };
         _closeToTray.CheckedChanged += (_, _) => { if (!_loading) { _s.CloseToTray = _closeToTray.Checked; _s.Save(); } };
         _autoWin.CheckedChanged += (_, _) =>
@@ -155,13 +163,21 @@ sealed class MainForm : Form
             catch (Exception ex) { Log.Error("Listing devices", ex); }
             _devices.SelectedItem = _devices.Items.Cast<DeviceItem>().FirstOrDefault(d => d.Id == _s.DeviceId) ?? _devices.Items[0];
 
+            _quietDevices.Items.Clear();
+            string? defaultId = null;
+            try { using var en = new NAudio.CoreAudioApi.MMDeviceEnumerator(); using var def = en.GetDefaultAudioEndpoint(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia); defaultId = def.ID; } catch { }
+            foreach (var d in _devices.Items.Cast<DeviceItem>().Where(d => d.Id != null)) _quietDevices.Items.Add(d);
+            _quietDevices.SelectedItem = _quietDevices.Items.Cast<DeviceItem>().FirstOrDefault(d => d.Id == _s.QuietDeviceId)
+                                         ?? _quietDevices.Items.Cast<DeviceItem>().FirstOrDefault(d => d.Id != defaultId);
+            if (_quietDevices.Items.Count < 2) { _muteLocal.Text = "Keep it off my PC (needs a 2nd output, see README):"; }
+
             RefreshApps();
             _modeApp.Checked = _s.SourceMode == "app" && ProcessLoopbackCapture.IsSupported;
             _modeDevice.Checked = !_modeApp.Checked;
             _volume.Value = Math.Clamp(_s.Volume, 0, 100);
             _volLabel.Text = $"{_volume.Value}%";
             _autoStream.Checked = _s.AutoStartStreaming;
-            _muteLocal.Checked = _s.MuteAppLocally;
+            _muteLocal.Checked = _s.QuietAppLocally;
             _closeToTray.Checked = _s.CloseToTray;
             try { _autoWin.Checked = Autostart.IsEnabled; } catch { }
         }
@@ -204,7 +220,9 @@ sealed class MainForm : Form
         _devices.Enabled = _modeDevice.Checked;
         _apps.Enabled = _modeApp.Checked;
         _refreshApps.Enabled = _modeApp.Checked;
-        _muteLocal.Enabled = _modeApp.Checked;
+        bool routeOk = ProcessLoopbackCapture.IsSupported && AppAudioRouting.IsSupported;
+        _muteLocal.Enabled = _modeApp.Checked && routeOk;
+        _quietDevices.Enabled = _modeApp.Checked && routeOk && _muteLocal.Checked;
     }
 
     protected override async void OnShown(EventArgs e)
@@ -291,8 +309,8 @@ sealed class MainForm : Form
         {
             var exe = (_apps.SelectedItem as AudioAppInfo)?.ExeName ?? _s.AppExe;
             if (string.IsNullOrEmpty(exe)) { SetStatus("Pick an app first (start playing something in it, then press Refresh)."); return; }
-            bool mute = _muteLocal.Checked;
-            factory = () => new ProcessLoopbackCapture(exe, mute);
+            string? quiet = _muteLocal.Checked && _muteLocal.Enabled ? (_quietDevices.SelectedItem as DeviceItem)?.Id : null;
+            factory = () => new ProcessLoopbackCapture(exe, quiet);
         }
         else
         {

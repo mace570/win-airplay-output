@@ -13,7 +13,8 @@ public sealed class AppSettings
     public int Volume { get; set; } = 40;
     public int LatencyMs { get; set; } = 2000;
     public bool AutoStartStreaming { get; set; }
-    public bool MuteAppLocally { get; set; } = true;
+    public bool QuietAppLocally { get; set; } = true;
+    public string? QuietDeviceId { get; set; }
     public bool CloseToTray { get; set; } = true;
     public bool StartMinimized { get; set; }
 
