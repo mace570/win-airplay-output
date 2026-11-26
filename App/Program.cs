@@ -15,6 +15,7 @@ static class Program
         Log.Init(Path.Combine(AppSettings.Dir, "airsend.log"));
         Log.Info($"AirSend {Application.ProductVersion} starting on Windows {Environment.OSVersion.Version} ({(Environment.Is64BitOperatingSystem ? "x64" : "x86")})");
         timeBeginPeriod(1);
+        LocalMute.RecoverAfterCrash();
 
         if (args.Length > 0 && args[0].StartsWith("--") && args[0] != "--minimized")
         {
@@ -66,6 +67,33 @@ static class Program
                     Log.Info($"captured {fifo.TotalWritten} frames @ {fifo.SampleRate} Hz, peak {fifo.TakePeak():0.000}");
                     fifo.Skip(fifo.FramesAvailable);
                 }
+                return 0;
+            }
+            case "--mute-test":
+            {
+                // --mute-test --app Spotify : does app capture still get sound while the app / the device is muted?
+                var app = Arg("--app");
+                if (string.IsNullOrEmpty(app)) { Log.Error("--app is required"); return 2; }
+                var fifo = new AudioFifo();
+                using var cap = new ProcessLoopbackCapture(app);
+                cap.Start(fifo);
+                async Task<float> Phase(string name)
+                {
+                    fifo.TakePeak(); float peak = 0;
+                    for (int i = 0; i < 8; i++) { await Task.Delay(400); peak = Math.Max(peak, fifo.TakePeak()); fifo.Skip(fifo.FramesAvailable); }
+                    Log.Info($"MUTETEST {name}: peak {peak:0.000}");
+                    return peak;
+                }
+                await Task.Delay(1500);
+                await Phase("baseline");
+                var lm = new LocalMute(app);
+                try { Log.Info($"muted {lm.Apply()} session(s)"); await Phase("app-muted-in-mixer"); }
+                finally { lm.Restore(); }
+                await Phase("after-app-unmute");
+                var dm = new DeviceMute(null);
+                try { dm.Apply(); await Phase("default-device-muted"); }
+                finally { dm.Dispose(); }
+                await Phase("after-device-unmute");
                 return 0;
             }
             case "--stream":
